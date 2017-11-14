@@ -9,6 +9,7 @@ import threading
 import traceback
 import time
 import warnings
+import weakref
 
 
 def _default_timer():
@@ -28,13 +29,17 @@ def _bootstrap_inner(hook, thread):
 class _ThreadProfilingHook:
 
     def __init__(self, mtprofiler):
-        self._mtprofiler = mtprofiler
+        self._mtprofiler = weakref.ref(mtprofiler)
 
     def _bootstrap_inner(self, thread):
         try:
             assert isinstance(thread, threading.Thread)
-            self._mtprofiler._run_thread(thread,
-                                         functools.partial(_real_bootstrap_inner, thread))
+            prof = self._mtprofiler()
+            if prof is not None:
+                prof._run_thread(thread,
+                                 functools.partial(_real_bootstrap_inner, thread))
+            else:
+                _real_bootstrap_inner(thread)
         except SystemExit:
             pass
 
@@ -55,16 +60,15 @@ class _MTProfiler:
         self._partial_stats = []
         self._profiler_factory = functools.partial(profiler_class, self._timer, **kwargs)
 
-        self._main_profiler = self._profiler_factory()
-        self._thread_profilers = {}
         self._enabled = False
+        self._main_profiler = self._profiler_factory()
+        self._main_tid = None
+        self._thread_profilers = {}
+        self._lock = threading.Lock()
 
         self._mt_hook = _ThreadProfilingHook(self)
         self._mt_hook._enable_hook()
-
-    def __del__(self):
-        if self._mt_hook is not None:
-            self._mt_hook._disable_hook()
+        self._finalizer = weakref.finalize(self, self._mt_hook._disable_hook)
 
     def _add_partial_stats(self, stats):
         self._partial_stats.append(stats)
@@ -81,12 +85,13 @@ class _MTProfiler:
         return merged
 
     def _run_thread(self, thread, func):
-        if self.enabled:
-            prof = self._profiler_factory()
-            self._thread_profilers[thread] = prof
-            prof.enable()
-        else:
-            prof = None
+        with self._lock:
+            if self.enabled:
+                prof = self._profiler_factory()
+                self._thread_profilers[thread] = prof
+                prof.enable()
+            else:
+                prof = None
         try:
             func()
         finally:
@@ -113,21 +118,28 @@ class _MTProfiler:
 
     # Public API
 
+    def close(self):
+        self._finalizer()
+
     @property
     def enabled(self):
         return self._enabled
 
     def enable(self):
-        # XXX add locking
-        if not self._enabled:
-            self._main_profiler.enable()
-            self._enabled = True
+        with self._lock:
+            if not self._enabled:
+                self._main_profiler.enable()
+                self._main_tid = threading.get_ident()
+                self._enabled = True
 
     def disable(self):
-        # XXX add locking and tid check
-        if self._enabled:
-            self._main_profiler.disable()
-            self._enabled = False
+        with self._lock:
+            if self._enabled:
+                if threading.get_ident() != self._main_tid:
+                    raise RuntimeError("enable() and disable() should be "
+                                       "called from the same thread")
+                self._main_profiler.disable()
+                self._enabled = False
 
     def run(self, cmd):
         import __main__

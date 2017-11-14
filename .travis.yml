@@ -13,13 +13,14 @@ matrix:
   include:
   - os: linux
     python: "3.7-dev"
-  - os: osx
-    python: "3.6"
+  # XXX need miniconda for Python on OS X
+  #- os: osx
+    #python: "3.6"
   allow_failures:
   - os: linux
     python: "3.7-dev"
-  - os: osx
-    python: "3.6"
+  #- os: osx
+    #python: "3.6"
 
 install:
   - pip install -r requirements.txt
