@@ -17,7 +17,7 @@ class TestInternals(unittest.TestCase):
     def test_default_timer(self):
         DELAY = 1.4
         TOL = 0.2
-        f = mtprof._default_timer
+        f = mtprof._default_timer()
 
         t1 = f()
         consume_cpu_simple(DELAY)
