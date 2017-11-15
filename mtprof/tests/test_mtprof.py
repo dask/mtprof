@@ -93,6 +93,14 @@ class BaseProfilingTest:
         self.assertIn(key, stats, sorted(stats))
         return stats[key]
 
+    def check_function_durations(self, stats, func, ncalls, duration):
+        st = self.check_function(stats, func)
+        cc, nc, tt, ct, callers = st
+        self.assertEqual(nc, ncalls)
+        self.assertLessEqual(ct, duration * 1.5)
+        self.assertGreaterEqual(ct, duration * 0.8)
+        return st
+
     def check_in_pstats_output(self, lines, func, ncalls, strip_dirs=True):
         """
         Given *lines* output by pstats, check that *func* is mentioned
@@ -134,17 +142,11 @@ class TestSingleThread(BaseProfilingTest, unittest.TestCase):
         return prof
 
     def check_stats(self, stats, nruns=1):
-        st = self.check_function(stats, f)
-        cc, nc, tt, ct, callers = st
-        self.assertEqual(nc, nruns)
-        self.assertLessEqual(ct, self.DURATION * 1.5)
-        self.assertGreaterEqual(ct, self.DURATION * 0.8)
+        self.check_function_durations(stats, f, nruns, self.DURATION)
 
-        st = self.check_function(stats, run_until)
+        st = self.check_function_durations(stats, run_until,
+                                           self.NCALLS * nruns, self.DURATION)
         cc, nc, tt, ct, callers = st
-        self.assertEqual(nc, self.NCALLS * nruns)
-        self.assertLessEqual(ct, self.DURATION * 1.5)
-
         key = self.get_function_key(consume_cpu)
         self.assertEqual(list(callers), [key])
 
@@ -205,6 +207,63 @@ class TestSingleThread(BaseProfilingTest, unittest.TestCase):
         gc.collect()
         prof = mtprof.Profile()
         prof.close()
+
+
+class TestMultiThread(BaseProfilingTest, unittest.TestCase):
+    """
+    Multi-thread tests of the Python API.
+    """
+    DURATIONS = {f: 0.4,
+                 g: 0.1,
+                 h: 0.8}
+    NCALLS = 4
+
+    def profiler(self):
+        prof = mtprof.Profile()
+        self.addCleanup(prof.close)
+        return prof
+
+    def check_nominal_stats(self, stats):
+        func_durations = {}
+        for func in (f, g, h):
+            cc, nc, tt, ct, callers = self.check_function(stats, f)
+            self.assertEqual(nc, 1)
+            func_durations[func] = ct
+
+        # Since we're measuring per-thread CPU time and there's the GIL,
+        # each function's measurement is an unstable fraction of its wall
+        # clock time duration.
+        # Therefore only check 1) relative order 2) total summed duration
+        self.assertLessEqual(func_durations[g], func_durations[f])
+        self.assertLessEqual(func_durations[f], func_durations[h])
+
+        expected_duration = max(self.DURATIONS.values())
+        total_duration = sum(func_durations.values())
+        self.assertGreaterEqual(total_duration, expected_duration * 0.6)
+        self.assertLessEqual(total_duration, expected_duration * 1.8)
+
+        self.check_function_durations(stats, run_until, self.NCALLS * 3,
+                                      expected_duration)
+
+    def nominal_workload(self, nruns=1):
+        threads = [threading.Thread(target=func,
+                                    args=(self.DURATIONS[func], self.NCALLS))
+                   for func in (g, h)]
+        for t in threads:
+            t.start()
+        f(self.DURATIONS[f], self.NCALLS)
+        for t in threads:
+            t.join()
+
+    def test_enable_disable(self):
+        prof = self.profiler()
+        prof.enable()
+        self.nominal_workload()
+        prof.disable()
+        prof.create_stats()
+        self.check_nominal_stats(prof.stats)
+
+    # XXX add tests for warnings with unhandled threads
 
 
 class TestCLI(BaseProfilingTest, unittest.TestCase):
