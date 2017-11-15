@@ -152,8 +152,10 @@ class TestSingleThread(BaseProfilingTest, unittest.TestCase):
         self.check_stats(prof.stats)
 
     def test_run(self):
+        import __main__
+        __main__.some_global_name = f
         prof = self.profiler()
-        prof.run("f(%r, %r)" % (self.DURATION, self.NCALLS))
+        prof.run("some_global_name(%r, %r)" % (self.DURATION, self.NCALLS))
         prof.create_stats()
         self.check_stats(prof.stats)
 
