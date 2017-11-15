@@ -18,24 +18,19 @@ def main():
                              "based on pstats.Stats class",
                         default=-1)
 
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('-m', dest="module",
-                       help="Profile a library module")
-    group.add_argument('script', nargs='?',
-                       help="Profile a script or application")
+    parser.add_argument('-m', dest="module", action='store_true',
+                        help="Profile a library module")
+    parser.add_argument('script_or_module',
+                        help="Script or module to profile")
 
     parser.add_argument('args', nargs=argparse.REMAINDER,
                         help="Additional arguments for script or module")
 
     args = parser.parse_args()
-    module_name = args.module
-    script_name = args.script
-    if not module_name and not script_name:
-        parser.print_usage()
-        sys.exit(2)
 
     prof = Profile()
     if args.module:
+        module_name = args.script_or_module
         sys.argv[:] = [module_name] + args.args
         prof.enable()
         try:
@@ -45,6 +40,7 @@ def main():
         finally:
             prof.disable()
     else:
+        script_name = args.script_or_module
         sys.argv[:] = [script_name] + args.args
         sys.path.insert(0, os.path.dirname(script_name))
         with open(script_name, 'rb') as fp:
