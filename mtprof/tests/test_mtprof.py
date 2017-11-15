@@ -1,8 +1,14 @@
 import gc
 import io
+import logging
+import os
 import pstats
+import sys
+import subprocess
 import threading
+import tempfile
 import time
+import timeit
 import unittest
 
 import mtprof
@@ -37,7 +43,9 @@ def h(duration, ncalls):
 
 
 class TestInternals(unittest.TestCase):
-
+    """
+    Test internal functions
+    """
     def test_default_timer(self):
         DELAY = 1.4
         TOL = 0.2
@@ -68,32 +76,35 @@ class BaseProfilingTest:
         else:
             return code.co_filename, code.co_firstlineno, code.co_name
 
-    def get_function_repr(self, func):
+    def get_function_repr(self, func, strip_dirs=False):
         try:
             code = func.__code__
         except AttributeError:
             raise
         else:
             # filename:lineno(function)
-            return "%s:%d(%s)" % (code.co_filename, code.co_firstlineno, code.co_name)
+            filename = code.co_filename
+            if strip_dirs:
+                filename = os.path.basename(filename)
+            return "%s:%d(%s)" % (filename, code.co_firstlineno, code.co_name)
 
     def check_function(self, stats, func):
         key = self.get_function_key(func)
         self.assertIn(key, stats, sorted(stats))
         return stats[key]
 
-    def check_in_pstats(self, prof, func, ncalls):
-        sio = io.StringIO()
-        st = pstats.Stats(prof, stream=sio)
-        st.sort_stats('cumtime').print_stats(20)
-        sio.seek(0)
-        look_for = self.get_function_repr(func)
-        for line in sio:
+    def check_in_pstats_output(self, lines, func, ncalls, strip_dirs=True):
+        """
+        Given *lines* output by pstats, check that *func* is mentioned
+        with *ncalls* total function calls.
+        """
+        look_for = self.get_function_repr(func, strip_dirs)
+        for line in lines:
             parts = line.strip().split()
             if parts and parts[-1] == look_for:
                 break
         else:
-            self.fail("could not find %r in %r" % (look_for, sio.getvalue()))
+            self.fail("could not find %r in %r" % (look_for, lines))
         nc, tt, percall, ct, cumpercall = parts[:5]
         nc = int(nc.partition('/')[0])
         tt = float(tt)
@@ -101,8 +112,19 @@ class BaseProfilingTest:
         self.assertEqual(nc, ncalls)
         return tt, ct
 
+    def check_in_pstats(self, pstats_arg, func, ncalls):
+        sio = io.StringIO()
+        st = pstats.Stats(pstats_arg, stream=sio)
+        st.sort_stats('cumtime').print_stats(20)
+        return self.check_in_pstats_output(sio.getvalue().splitlines(),
+                                           func, ncalls,
+                                           strip_dirs=False)
+
 
 class TestSingleThread(BaseProfilingTest, unittest.TestCase):
+    """
+    Single-thread tests of the Python API.
+    """
     DURATION = 0.2
     NCALLS = 4
 
@@ -183,6 +205,68 @@ class TestSingleThread(BaseProfilingTest, unittest.TestCase):
         gc.collect()
         prof = mtprof.Profile()
         prof.close()
+
+
+class TestCLI(BaseProfilingTest, unittest.TestCase):
+
+    def run_cli(self, args, retcode=0):
+        command = [sys.executable, '-m', 'mtprof'] + args
+        proc = subprocess.run(command, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True,
+                              timeout=10)
+        if proc.returncode != retcode:
+            print("------- Process stdout --------")
+            print(proc.stdout)
+            print("------- Process stderr --------")
+            print(proc.stderr)
+            self.assertEqual(proc.returncode, retcode)
+        return proc
+
+    def make_tempfile(self, suffix=None):
+        fd, name = tempfile.mkstemp(prefix='test_mprof_', suffix=suffix)
+        os.close(fd)
+        self.addCleanup(os.unlink, name)
+        return name
+
+    def timeit_args(self):
+        timeit_args = ['-n', '800', '-r', '2',
+                       '-s', 'import logging', 'logging.getLogger("foo")']
+        return timeit_args
+
+    def timeit_check(self, lines):
+        self.check_in_pstats_output(lines, logging.getLogger, 1600)
+
+    def test_basic(self):
+        proc = self.run_cli([], retcode=2)
+        proc = self.run_cli(['-m'], retcode=2)
+
+    def test_timeit_module(self):
+        """
+        python -m mtprof -m timeit ...
+        """
+        proc = self.run_cli(['-m', 'timeit'] + self.timeit_args())
+        self.timeit_check(proc.stdout.splitlines())
+        self.assertFalse(proc.stderr)
+
+    def test_timeit_script(self):
+        """
+        python -m mtprof /xxx/timeit.py ...
+        """
+        proc = self.run_cli([timeit.__file__] + self.timeit_args())
+        self.timeit_check(proc.stdout.splitlines())
+        self.assertFalse(proc.stderr)
+
+    def test_outfile(self):
+        outfile = self.make_tempfile(suffix='.prof')
+        proc = self.run_cli(['-o', outfile, '-m', 'timeit'] + self.timeit_args())
+        self.assertFalse(proc.stderr)
+
+        sio = io.StringIO()
+        stats = pstats.Stats(outfile, stream=sio)
+        stats.strip_dirs()
+        stats.sort_stats('time')
+        stats.print_stats(30)
+        self.timeit_check(sio.getvalue().splitlines())
 
 
 if __name__ == "__main__":
