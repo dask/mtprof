@@ -13,6 +13,12 @@ Compatibility
 Python 3 is required, and only POSIX systems (Linux, etc.) are currently
 supported.
 
+Install
+-------
+
+This is a pure Python package, so ``pip install mtprof`` should generally
+work everywhere.
+
 Command-line interface
 ----------------------
 
